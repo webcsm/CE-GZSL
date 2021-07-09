@@ -15,6 +15,11 @@ import classifier_embed_contras
 import model
 import losses
 import torch.nn.functional as F
+import logging
+import time
+import numpy as np
+
+logging.basicConfig(level=logging.INFO)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default='CUB', help='FLO')
@@ -23,8 +28,8 @@ parser.add_argument('--matdataset', default=True, help='Data in matlab format')
 parser.add_argument('--image_embedding', default='res101')
 parser.add_argument('--class_embedding', default='sent',help='att or sent')
 parser.add_argument('--syn_num', type=int, default=100, help='number features to generate per class')
-parser.add_argument('--gzsl', type=bool, default=True, help='enable generalized zero-shot learning')
-parser.add_argument('--preprocessing', type=bool, default=True, help='enbale MinMaxScaler on visual features')
+parser.add_argument('--gzsl', action="store_true", default=False, help='enable generalized zero-shot learning')
+parser.add_argument('--preprocessing', action="store_true", default=False, help='enbale MinMaxScaler on visual features')
 parser.add_argument('--standardization', action='store_true', default=False)
 parser.add_argument('--validation', action='store_true', default=False, help='enable cross validation mode')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
@@ -53,20 +58,28 @@ parser.add_argument('--lr_dec_rate', type=float, default=0.99, help='learning ra
 parser.add_argument('--lambda1', type=float, default=10, help='gradient penalty regularizer, following WGAN-GP')
 parser.add_argument('--classifier_lr', type=float, default=0.001, help='learning rate to train softmax classifier')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
-parser.add_argument('--cuda', action='store_true', default=True, help='enables cuda')
+parser.add_argument('--cuda', action='store_true', default=False, help='enables cuda')
 parser.add_argument('--manualSeed', type=int, default=3483, help='manual seed')
 parser.add_argument('--nclass_all', type=int, default=200, help='number of all classes')
 parser.add_argument('--nclass_seen', type=int, default=150, help='number of all classes')
 
 parser.add_argument('--gpus', default='0', help='the number of the GPU to use')
+
+parser.add_argument('--resume', action="store_true", default=False, help='resume training')
+parser.add_argument('--exp_path', default='./exp', help='path to experiment data')
+
 opt = parser.parse_args()
-print(opt)
+logging.info(opt)
+
+checkpoint_epochs = 100
+checkpoint_file = os.path.join(opt.exp_path, "checkpoint.pt")
+os.makedirs(opt.exp_path, exist_ok=True)
 
 os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus
 
 if opt.manualSeed is None:
     opt.manualSeed = random.randint(1, 10000)
-print("Random Seed: ", opt.manualSeed)
+logging.info("Random Seed: {}".format(opt.manualSeed))
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 if opt.cuda:
@@ -75,20 +88,20 @@ if opt.cuda:
 cudnn.benchmark = True
 
 if torch.cuda.is_available() and not opt.cuda:
-    print("WARNING: You have a CUDA device, so you should probably run with --cuda")
+    logging.info("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
 # load data
 data = util.DATA_LOADER(opt)
-print("# of training samples: ", data.ntrain)
+logging.info("# of training samples: {}".format(data.ntrain))
 
 netG = model.MLP_G(opt)
 netMap = model.Embedding_Net(opt)
 netD = model.MLP_CRITIC(opt)
 F_ha = model.Dis_Embed_Att(opt)
 
-model_path = './models/' + opt.dataset
-if not os.path.exists(model_path):
-    os.makedirs(model_path)
+# model_path = './models/' + opt.dataset
+# if not os.path.exists(model_path):
+#     os.makedirs(model_path)
 
 if len(opt.gpus.split(','))>1:
     netG=nn.DataParallel(netG)
@@ -143,12 +156,44 @@ def generate_syn_feature(netG, classes, attribute, num):
     return syn_feature, syn_label
 
 
+def load_checkpoint(ckp_file, generator, discriminator, embedding, comparator, optD, optG):
+    logging.info("loading checkpoint: {}".format(ckp_file))
+    checkpoint = torch.load(ckp_file)
+    epoch = checkpoint["epoch"]
+    generator.load_state_dict(checkpoint['netG'])
+    discriminator.load_state_dict(checkpoint['netD'])
+    embedding.load_state_dict(checkpoint['netMap'])
+    comparator.load_state_dict(checkpoint['F_ha'])
+    optD.load_state_dict(checkpoint['optimizerD'])
+    optG.load_state_dict(checkpoint['optimizerG'])
+    return epoch
+
+def save_checkpoint(epoch, ckp_file, generator, discriminator, embedding, comparator, optD, optG):
+    logging.info("saving checkpoint: {}".format(ckp_file))
+    torch.save({
+        'epoch': epoch + 1,
+        'netG': generator.state_dict(),
+        'netD': discriminator.state_dict(),
+        'netMap': embedding.state_dict(),
+        'F_ha': comparator.state_dict(),
+        'optimizerD': optD.state_dict(),
+        'optimizerG': optG.state_dict()
+    }, ckp_file)
+
+
 # setup optimizer
 import itertools
 
 optimizerD = optim.Adam(itertools.chain(netD.parameters(), netMap.parameters(), F_ha.parameters()), lr=opt.lr,
                         betas=(opt.beta1, 0.999))
 optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+
+
+if opt.resume:
+    start_epoch = load_checkpoint(checkpoint_file, netG, netD, netMap, F_ha, optimizerD, optimizerG)
+else:
+    start_epoch = 0
+
 
 def calc_gradient_penalty(netD, real_data, fake_data, input_att):
     # print real_data.size()
@@ -201,7 +246,10 @@ def class_scores_in_matrix(embed, input_label, relation_net):
     return cls_loss
 
 
-for epoch in range(opt.nepoch):
+for epoch in range(start_epoch, opt.nepoch):
+
+    epoch_start = time.time()
+
     FP = 0
     mean_lossD = 0
     mean_lossG = 0
@@ -243,7 +291,7 @@ for epoch in range(opt.nepoch):
             gradient_penalty = calc_gradient_penalty(netD, input_res, fake.data, input_att)
             Wasserstein_D = criticD_real - criticD_fake
 
-            cls_loss_real = class_scores_for_loop(embed_real, input_label, F_ha)
+            cls_loss_real = class_scores_in_matrix(embed_real, input_label, F_ha)
 
             D_cost = criticD_fake - criticD_real + gradient_penalty + real_ins_contras_loss + cls_loss_real
 
@@ -275,7 +323,7 @@ for epoch in range(opt.nepoch):
 
         fake_ins_contras_loss = contras_criterion(all_outz, torch.cat((input_label, input_label), dim=0))
 
-        cls_loss_fake = class_scores_for_loop(embed_fake, input_label, F_ha)
+        cls_loss_fake = class_scores_in_matrix(embed_fake, input_label, F_ha)
 
         errG = G_cost + opt.ins_weight * fake_ins_contras_loss + opt.cls_weight * cls_loss_fake  # + opt.ins_weight * c_errG
 
@@ -291,15 +339,17 @@ for epoch in range(opt.nepoch):
 
     mean_lossG /= data.ntrain / opt.batch_size
     mean_lossD /= data.ntrain / opt.batch_size
-    print(
-        '[%d/%d] Loss_D: %.4f Loss_G: %.4f, Wasserstein_dist: %.4f, real_ins_contras_loss:%.4f, fake_ins_contras_loss:%.4f, cls_loss_real: %.4f, cls_loss_fake: %.4f'
-        % (epoch, opt.nepoch, D_cost, G_cost, Wasserstein_D, real_ins_contras_loss, fake_ins_contras_loss, cls_loss_real, cls_loss_fake))
+    logging.info("Dfake: {} Dreal: {} GP: {}".format(criticD_fake, criticD_real, gradient_penalty))
+    logging.info(
+        '[{}/{}] Loss_D: {:.4f} Loss_G: {:.4f}, Wasserstein_dist: {:.4f}, real_ins_contras_loss: {:.4f}, fake_ins_contras_loss: {:.4f}, cls_loss_real: {:.4f}, cls_loss_fake: {:.4f}, time: {:.4f}'.format(epoch, opt.nepoch, D_cost, G_cost, Wasserstein_D, real_ins_contras_loss, fake_ins_contras_loss, cls_loss_real, cls_loss_fake, time.time() - epoch_start))
 
     # evaluate the model, set G to evaluation mode
     netG.eval()
 
     for p in netMap.parameters():  # reset requires_grad
         p.requires_grad = False
+
+    cls_start = time.time()
 
     if opt.gzsl: # Generalized zero-shot learning
         syn_feature, syn_label = generate_syn_feature(netG, data.unseenclasses, data.attribute, opt.syn_num)
@@ -310,7 +360,7 @@ for epoch in range(opt.nepoch):
         cls = classifier_embed_contras.CLASSIFIER(train_X, train_Y, netMap, opt.embedSize, data, nclass, opt.cuda,
                                                   opt.classifier_lr, 0.5, 25, opt.syn_num,
                                                   True)
-        print('unseen=%.4f, seen=%.4f, h=%.4f' % (cls.acc_unseen, cls.acc_seen, cls.H))
+        logging.info('unseen= {:.4f}, seen= {:.4f}, h= {:.4f}, time= {:.4f}'.format(cls.acc_unseen, cls.acc_seen, cls.H, time.time() - cls_start))
 
     else:  # conventional zero-shot learning
         syn_feature, syn_label = generate_syn_feature(netG, data.unseenclasses, data.attribute, opt.syn_num)
@@ -320,11 +370,16 @@ for epoch in range(opt.nepoch):
                                                   opt.syn_num,
                                                   False)
         acc = cls.acc
-        print('unseen class accuracy=%.4f '%acc)
-
+        logging.info('unseen class accuracy= {:.4f}, time= {:.4f}'.format(acc, time.time() - cls_start))
 
     # reset G to training mode
     netG.train()
+
+    if (epoch + 1) % checkpoint_epochs == 0:
+        np.save(os.path.join(opt.exp_path, "syn_feature.npy"), syn_feature.numpy())
+        np.save(os.path.join(opt.exp_path, "syn_label.npy"), syn_label.numpy())
+        save_checkpoint(epoch, checkpoint_file, netG, netD, netMap, F_ha, optimizerD, optimizerG)
+
     for p in netMap.parameters():  # reset requires_grad
         p.requires_grad = True
 
