@@ -8,6 +8,9 @@ import h5py
 import os
 from logger import create_logger
 import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 def initialize_exp(path, name):
@@ -108,7 +111,7 @@ class DATA_LOADER(object):
 
 	def read_matimagenet(self, opt):
 		if opt.preprocessing:
-			print('MinMaxScaler...')
+			logging.info('MinMaxScaler...')
 			scaler = preprocessing.MinMaxScaler()
 			matcontent = h5py.File(opt.dataroot + "/ILSVRC_2012" + "/ILSVRC2012_res101_feature.mat", "r")
 			feature = scaler.fit_transform(np.array(matcontent['features'])).T
@@ -175,7 +178,7 @@ class DATA_LOADER(object):
 	def read_matdataset(self, opt):
 		matcontent = sio.loadmat(opt.dataroot + "/" + opt.dataset + "/" + opt.image_embedding + ".mat")
 		feature = matcontent['features'].T
-		self.all_file = matcontent['image_files']
+		# self.all_file = matcontent['image_files']
 		label = matcontent['labels'].astype(int).squeeze() - 1
 		matcontent = sio.loadmat(opt.dataroot + "/" + opt.dataset + "/" + opt.class_embedding + "_splits.mat")
 		# numpy array index starts from 0, matlab starts from 1
@@ -187,13 +190,13 @@ class DATA_LOADER(object):
 
 		self.attribute = torch.from_numpy(matcontent['att'].T).float()
 		if not opt.validation:
-			self.train_image_file = self.all_file[trainval_loc]
-			self.test_seen_image_file = self.all_file[test_seen_loc]
-			self.test_unseen_image_file = self.all_file[test_unseen_loc]
+			# self.train_image_file = self.all_file[trainval_loc]
+			# self.test_seen_image_file = self.all_file[test_seen_loc]
+			# self.test_unseen_image_file = self.all_file[test_unseen_loc]
 
 			if opt.preprocessing:
 				if opt.standardization:
-					print('standardization...')
+					logging.info('standardization...')
 					scaler = preprocessing.StandardScaler()
 				else:
 					scaler = preprocessing.MinMaxScaler()
