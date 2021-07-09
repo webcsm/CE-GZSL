@@ -6,6 +6,14 @@ import numpy as np
 import util
 from sklearn.preprocessing import MinMaxScaler 
 import sys
+import logging
+from sklearn.metrics import balanced_accuracy_score
+import warnings
+
+
+logging.basicConfig(level=logging.INFO)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 
 class CLASSIFIER:
     # train_Y is interger 
@@ -70,7 +78,7 @@ class CLASSIFIER:
             acc = self.val(self.test_unseen_feature, self.test_unseen_label, self.unseenclasses)
             if acc > best_acc:
                 best_acc = acc
-        print('Training classifier loss= %.4f' % (loss))
+        logging.info('Training classifier loss= {:.4f}'.format(loss))
         return best_acc 
 
     def fit(self):
@@ -93,7 +101,7 @@ class CLASSIFIER:
             acc_seen = self.val_gzsl(self.test_seen_feature, self.test_seen_label, self.seenclasses)
             acc_unseen = self.val_gzsl(self.test_unseen_feature, self.test_unseen_label, self.unseenclasses)
             if (acc_seen+acc_unseen)==0:
-                print('a bug')
+                logging.info('a bug')
                 H=0
             else:
                 H = 2*acc_seen*acc_unseen / (acc_seen+acc_unseen)
@@ -156,7 +164,8 @@ class CLASSIFIER:
             _, predicted_label[start:end] = torch.max(output, 1)
             start = end
 
-        acc = self.compute_per_class_acc_gzsl(test_label, predicted_label, target_classes)
+        # acc = self.compute_per_class_acc_gzsl(test_label, predicted_label, target_classes)
+        acc = balanced_accuracy_score(test_label, predicted_label)
         return acc
 
     def compute_per_class_acc_gzsl(self, test_label, predicted_label, target_classes):
@@ -184,7 +193,8 @@ class CLASSIFIER:
             _, predicted_label[start:end] = torch.max(output, 1)
             start = end
 
-        acc = self.compute_per_class_acc(util.map_label(test_label, target_classes), predicted_label, target_classes.size(0))
+        # acc = self.compute_per_class_acc(util.map_label(test_label, target_classes), predicted_label, target_classes.size(0))
+        acc = balanced_accuracy_score(util.map_label(test_label, target_classes), predicted_label)
         return acc
 
     def compute_per_class_acc(self, test_label, predicted_label, nclass):
